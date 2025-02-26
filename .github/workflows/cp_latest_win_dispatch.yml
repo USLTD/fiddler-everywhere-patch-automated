@@ -1,6 +1,15 @@
 name: Latest Windows Version - Workflow Dispatch
 
 on:
+  workflow_dispatch:
+    inputs:
+      os-and-arch:
+        description: 'Operating System And Architecture'
+        required: false
+        default: 'Windows (x86_64)'
+        type: choice
+        options:
+          - Windows (x86_64)
   schedule:
     - cron: "0 0/23 * * *"
 
