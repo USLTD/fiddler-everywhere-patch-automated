@@ -2,7 +2,7 @@ name: Latest Windows Version - Workflow Dispatch
 
 on:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 0/24 * * *"
 
 env:
   OS_ARCH: 'Windows (x86_64)'
