@@ -1,9 +1,9 @@
-name: Latest Windows Version - Workflow Dispatch
+name: Latest Windows Version
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 */23 * * *"
+    - cron: '0 0/23 * * *' # every 23 hours
+  workflow_dispatch:
 
 env:
   OS_ARCH: 'Windows (x86_64)'
