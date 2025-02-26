@@ -171,7 +171,7 @@ jobs:
           if-no-files-found: error
 
   download-fiddler-everywhere-windows:
-    if: ${{ github.event.inputs.os-and-arch == 'Windows (x86_64)' }}
+    if: always()
     runs-on: windows-latest
     needs: 
       - scrape_fe_version
