@@ -11,26 +11,34 @@ on:
   workflow_dispatch:
 
 jobs:
+
   scrape_fe_version:
     runs-on: windows-latest
+    
     outputs:
       scraped_version: ${{ steps.set_scraped_version.outputs.scraped_version }}
+
     env:
       NODE_JS_VERSION: 23.1.0
+
     steps:
       - uses: actions/checkout@v4
+      
       - name: Use Node.js ${{ env.NODE_JS_VERSION }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_JS_VERSION }}
           cache: 'npm'  # Auto-caches npm dependencies
           cache-dependency-path: utils/fe-version-scraper/package-lock.json
+
       - name: Install Node.js dependencies
         run: npm ci
         working-directory: utils/fe-version-scraper
+
       - name: Run the Node.js script
         run: node .
         working-directory: utils/fe-version-scraper
+
       - name: Read & Set Env
         id: set_scraped_version
         run: |
@@ -41,13 +49,16 @@ jobs:
     runs-on: windows-latest
     needs: 
       - scrape_fe_version
+
     env: 
       SCRAPED_VERSION: ${{ needs.scrape_fe_version.outputs.scraped_version }}
       LIBRARY_EXTENSION: 'dll'
       ARCH_CODE: 'win32-x86_64'
+      
     outputs:
       is-compatible-cont: ${{ steps.is-compatible-cont.outputs.is-compatible-cont }}
       Yui-fiddler-name: ${{ steps.Yui-fiddler-name.outputs.Yui-fiddler-name }}
+
     steps:
       - name: Compare SCRAPED_VERSION with 5.17.0
         id: scraped_version_check
@@ -66,33 +77,41 @@ jobs:
           }
         
         shell: pwsh
+
       - name: Set IS_COMPATIBLE_CONT as Output
         id: is-compatible-cont
         run: echo "is-compatible-cont=${{ env.IS_COMPATIBLE_CONT }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
       - name: Set Yui name 
         run: echo "YUI_NAME=yui" | Out-File -Append -FilePath $env:GITHUB_ENV
+        
       - name: Set Yui fiddler name (>= 5.17.0)
         if: env.IS_COMPATIBLE_CONT == 'true'
         run: |
           echo "Yui_FIDDLER_NAME=fiddler.$env:LIBRARY_EXTENSION" | Out-File -Append -FilePath $env:GITHUB_ENV
           echo "Yui_FIDDLER_NAME_NO_EXTENSION=fiddler" | Out-File -Append -FilePath $env:GITHUB_ENV
+
       - name: Set Yui fiddler name (< 5.17.0 or on linux)
-        if: env.IS_COMPATIBLE_CONT == 'false''
+        if: env.IS_COMPATIBLE_CONT == 'false'
         run: |
           echo "Yui_FIDDLER_NAME=libfiddler.$env:LIBRARY_EXTENSION" | Out-File -Append -FilePath $env:GITHUB_ENV
           echo "Yui_FIDDLER_NAME_NO_EXTENSION=libfiddler" | Out-File -Append -FilePath $env:GITHUB_ENV
+
       - name: Set Yui_FIDDLER_NAME as Output
         id: Yui-fiddler-name
         run: echo "Yui-fiddler-name=${{ env.Yui_FIDDLER_NAME }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
       - name: Create Yui directory
         run: |
           if (-Not (Test-Path "Yui")) {
             New-Item -ItemType Directory -Path "Yui"
           }
         shell: pwsh
+
       - name: Set Yui Release
         if: env.IS_COMPATIBLE_CONT == 'true' 
         run: echo "Yui_RELEASE=continuous" | Out-File -Append -FilePath $env:GITHUB_ENV
+        
       - name: Download Yui Patch
         run: |
           Write-Host "EXTENSION = $env:LIBRARY_EXTENSION"
@@ -113,20 +132,24 @@ jobs:
             exit 1
           }
         shell: pwsh
+      
       - name: Upload Yui folder as an artifact
         uses: actions/upload-artifact@v4
         with:
           name: Yui-patch
           path: Yui/
           if-no-files-found: error
+
   download-msojocs-server:
     runs-on: windows-latest
+
     steps:
       - name: Set up Git
         run: |
           git init
           git remote add origin https://github.com/msojocs/fiddler-everywhere-enhance.git
           git config core.sparseCheckout true
+
       - name: Configure sparse-checkout to download the server directory
         run: |
           echo "server" | Out-File -Append -FilePath .git\info\sparse-checkout
@@ -187,6 +210,102 @@ jobs:
           path: fe_app/
           if-no-files-found: error
 
+  download-fiddler-everywhere-linux:
+    if: ${{ github.event.inputs.os-and-arch == 'Linux (x86_64)' }}
+    runs-on: ubuntu-latest
+    needs: 
+      - scrape_fe_version
+
+    steps:
+      - name: Build URL & Download
+        run: |
+          # Retrieve the scraped version from the previous step
+          $scrapedVersion = "${{ needs.scrape_fe_version.outputs.scraped_version }}"
+          
+          # Check if the scraped version is available
+          if (-not [string]::IsNullOrEmpty($scrapedVersion)) {
+            $downloadUrl = "https://downloads.getfiddler.com/linux/fiddler-everywhere-$scrapedVersion.AppImage"
+          
+            Write-Host "Download URL: $downloadUrl"
+
+            Invoke-WebRequest -Uri $downloadUrl -OutFile "FiddlerEverywhereSetup.AppImage"
+            
+          } else {
+            Write-Host "SCRAPED_VERSION is empty or not set"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Extract AppImage 
+        run: |
+          chmod +x ./FiddlerEverywhereSetup.AppImage
+          ./FiddlerEverywhereSetup.AppImage --appimage-extract
+
+      - name: Rename squashfs-root to fe_app
+        run: mv squashfs-root fe_app
+        
+      - name: Upload Fiddler Everywhere Extracted folder as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe_app
+          path: fe_app/
+          if-no-files-found: error
+
+  download-fiddler-everywhere-mac:
+    if: ${{ github.event.inputs.os-and-arch == 'Mac (x86_64)' || github.event.inputs.os-and-arch == 'Mac (arm64)' || github.event.inputs.os-and-arch == 'Mac (arm64e)' }}
+    runs-on: mac-latest
+    needs: 
+      - scrape_fe_version
+
+    env: 
+      ARCH_CODE: ${{ github.event.inputs.arch_code }}
+
+    steps:
+      - name: Build URL & Download
+        run: |
+          # Retrieve the scraped version from the previous step
+          $scrapedVersion = "${{ needs.scrape_fe_version.outputs.scraped_version }}"
+          
+          # Check if the scraped version is available
+          if (-not [string]::IsNullOrEmpty($scrapedVersion)) {
+            $downloadUrl = "null"
+
+            if ($env:ARCH_CODE -eq "x86_64") {
+              $downloadUrl = "https://downloads.getfiddler.com/mac/Fiddler%20Everywhere%20$scrapedVersion.dmg"
+            } elseif ($env:ARCH_CODE -eq "arm64") {
+              $downloadUrl = "https://downloads.getfiddler.com/mac-arm64/Fiddler%20Everywhere%20$scrapedVersion.dmg"
+            } elseif ($env:ARCH_CODE -eq "arm64e") {
+              //Don't know
+            } else {
+              throw "Unsupported OS architecture: $env:ARCH_CODE"
+            }
+          
+            Write-Host "Download URL: $downloadUrl"
+
+            Invoke-WebRequest -Uri $downloadUrl -OutFile "FiddlerEverywhereSetup.dmg"
+            
+          } else {
+            Write-Host "SCRAPED_VERSION is empty or not set"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Extract AppImage 
+        run: |
+          hdiutil attach FiddlerEverywhere.dmg
+          cp -R /Volumes/FiddlerEverywhere/* ./fe_app/
+
+      - name: List fe_app
+        shell: pwsh
+        run: Get-ChildItem -Recurse
+        
+      - name: Upload Fiddler Everywhere Extracted folder as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe_app
+          path: fe_app/
+          if-no-files-found: error
+
   patch_fe:
     runs-on: windows-latest
 
@@ -195,6 +314,8 @@ jobs:
       - download-msojocs-server
       - scrape_fe_version
       - download-fiddler-everywhere-windows
+      - download-fiddler-everywhere-linux
+      - download-fiddler-everywhere-mac
     if: always()
 
     env:
