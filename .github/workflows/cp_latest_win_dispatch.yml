@@ -1,0 +1,354 @@
+name: Latest Version - Workflow Dispatch
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+
+env:
+  OS_ARCH: 'Windows (x86_64)'
+
+jobs:
+
+  init_os_arch:
+    runs-on: windows-latest
+    outputs:
+      library_extension:  ${{ steps.set_library_extension.outputs.library_extension }}
+      arch_code:  ${{ steps.set_arch.outputs.arch_code }}
+
+    steps:
+      - name: Set Library Extension (dll / so / dylib)
+        id: set_library_extension
+        shell: pwsh
+        run: |
+          "library_extension=dll" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
+      - name: Set Library Extension (dll / so / dylib)
+        id: set_arch
+        shell: pwsh
+        run: |
+          "arch_code=win32-x86_64" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
+  scrape_fe_version:
+    runs-on: windows-latest
+    
+    outputs:
+      scraped_version: ${{ steps.set_scraped_version.outputs.scraped_version }}
+
+    env:
+      NODE_JS_VERSION: 23.1.0
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Use Node.js ${{ env.NODE_JS_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_JS_VERSION }}
+          cache: 'npm'  # Auto-caches npm dependencies
+          cache-dependency-path: utils/fe-version-scraper/package-lock.json
+
+      - name: Install Node.js dependencies
+        run: npm ci
+        working-directory: utils/fe-version-scraper
+
+      - name: Run the Node.js script
+        run: node .
+        working-directory: utils/fe-version-scraper
+
+      - name: Read & Set Env
+        id: set_scraped_version
+        run: |
+          $fileContent = Get-Content -Path "utils/fe-version-scraper/latest_version.txt" -Raw
+          echo "scraped_version=$fileContent" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+   
+  download-Yui-patch:
+    runs-on: windows-latest
+    needs: 
+      - scrape_fe_version
+      - init_os_arch
+
+    env: 
+      SCRAPED_VERSION: ${{ needs.scrape_fe_version.outputs.scraped_version }}
+      LIBRARY_EXTENSION: ${{ needs.init_os_arch.outputs.library_extension }}
+      ARCH_CODE: ${{ needs.init_os_arch.outputs.arch_code }}
+      
+    outputs:
+      is-compatible-cont: ${{ steps.is-compatible-cont.outputs.is-compatible-cont }}
+      Yui-fiddler-name: ${{ steps.Yui-fiddler-name.outputs.Yui-fiddler-name }}
+
+    steps:
+      - name: Compare SCRAPED_VERSION with 5.17.0
+        id: scraped_version_check
+        run: |
+          $scrapedVersion = $env:SCRAPED_VERSION
+          $compareVersion = "5.17.0"
+   
+          if (-not [string]::IsNullOrEmpty($scrapedVersion)) {
+              if ([version]$scrapedVersion -ge [version]$compareVersion) {
+                  echo "IS_COMPATIBLE_CONT=true" | Out-File -Append -FilePath $env:GITHUB_ENV
+              } else {
+                  echo "IS_COMPATIBLE_CONT=false" | Out-File -Append -FilePath $env:GITHUB_ENV
+              }
+          } else {
+              echo "IS_COMPATIBLE_CONT=false" | Out-File -Append -FilePath $env:GITHUB_ENV
+          }
+        
+        shell: pwsh
+
+      - name: Set IS_COMPATIBLE_CONT as Output
+        id: is-compatible-cont
+        run: echo "is-compatible-cont=${{ env.IS_COMPATIBLE_CONT }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
+      - name: Set Yui name 
+        run: echo "YUI_NAME=yui" | Out-File -Append -FilePath $env:GITHUB_ENV
+        
+      - name: Set Yui fiddler name (>= 5.17.0)
+        if: env.IS_COMPATIBLE_CONT == 'true'
+        run: |
+          echo "Yui_FIDDLER_NAME=fiddler.$env:LIBRARY_EXTENSION" | Out-File -Append -FilePath $env:GITHUB_ENV
+          echo "Yui_FIDDLER_NAME_NO_EXTENSION=fiddler" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Set Yui fiddler name (< 5.17.0 or on linux)
+        if: env.IS_COMPATIBLE_CONT == 'false' || env.OS_ARCH == 'Linux (x86_64)'
+        run: |
+          echo "Yui_FIDDLER_NAME=libfiddler.$env:LIBRARY_EXTENSION" | Out-File -Append -FilePath $env:GITHUB_ENV
+          echo "Yui_FIDDLER_NAME_NO_EXTENSION=libfiddler" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Set Yui_FIDDLER_NAME as Output
+        id: Yui-fiddler-name
+        run: echo "Yui-fiddler-name=${{ env.Yui_FIDDLER_NAME }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
+      - name: Create Yui directory
+        run: |
+          if (-Not (Test-Path "Yui")) {
+            New-Item -ItemType Directory -Path "Yui"
+          }
+        shell: pwsh
+
+      - name: Set Yui Release
+        if: env.IS_COMPATIBLE_CONT == 'true' 
+        run: echo "Yui_RELEASE=continuous" | Out-File -Append -FilePath $env:GITHUB_ENV
+        
+      - name: Download Yui Patch
+        run: |
+          Write-Host "EXTENSION = $env:LIBRARY_EXTENSION"
+          Write-Host "ARCH CODE =  $env:ARCH_CODE"
+          try {
+            # Build the download URLs
+            $YuiFiddlerUrl = "https://github.com/project-yui/Yui-patch/releases/download/$env:Yui_RELEASE/$env:YUI_NAME-$env:Yui_FIDDLER_NAME_NO_EXTENSION-$env:ARCH_CODE-$env:Yui_RELEASE.$env:LIBRARY_EXTENSION"
+            
+            # Print the URLs to ensure they're correct
+            Write-Host "Downloading files from $env:Yui_RELEASE"
+            Write-Host "Yui Fiddler URL: $YuiFiddlerUrl"
+
+            # Download the files
+            Invoke-WebRequest -Uri $YuiFiddlerUrl -OutFile "Yui\$env:Yui_FIDDLER_NAME"
+          }
+          catch {
+            Write-Error "Failed to download the patch files. Error details: $_"
+            exit 1
+          }
+        shell: pwsh
+      
+      - name: Upload Yui folder as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Yui-patch
+          path: Yui/
+          if-no-files-found: error
+
+  download-msojocs-server:
+    runs-on: windows-latest
+
+    steps:
+      - name: Set up Git
+        run: |
+          git init
+          git remote add origin https://github.com/msojocs/fiddler-everywhere-enhance.git
+          git config core.sparseCheckout true
+
+      - name: Configure sparse-checkout to download the server directory
+        run: |
+          echo "server" | Out-File -Append -FilePath .git\info\sparse-checkout
+          git pull origin main
+
+      - name: Move the downloaded directory to the target folder
+        run: |
+          mkdir -p msojocs
+          Move-Item -Path server -Destination msojocs/
+
+      - name: List files in the msojocs/server directory
+        run: Get-ChildItem -Path msojocs\server
+
+      - name: Upload msojocs folder as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: msojocs-patch
+          path: msojocs/
+          if-no-files-found: error
+
+  download-fiddler-everywhere-windows:
+    if: ${{ github.event.inputs.os-and-arch == 'Windows (x86_64)' }}
+    runs-on: windows-latest
+    needs: 
+      - scrape_fe_version
+
+    steps:
+      - name: Build URL & Download
+        run: |
+          # Retrieve the scraped version from the previous step
+          $scrapedVersion = "${{ needs.scrape_fe_version.outputs.scraped_version }}"
+          
+          # Check if the scraped version is available
+          if (-not [string]::IsNullOrEmpty($scrapedVersion)) {
+            $downloadUrl = "https://downloads.getfiddler.com/win/Fiddler%20Everywhere%20$scrapedVersion.exe"
+          
+            Write-Host "Download URL: $downloadUrl"
+
+            Invoke-WebRequest -Uri $downloadUrl -OutFile "FiddlerEverywhereSetup.exe"
+            
+          } else {
+            Write-Host "SCRAPED_VERSION is empty or not set"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Extract exe 
+        run: 7z x "FiddlerEverywhereSetup.exe" -ofe_extracted
+
+      - name: Extract app
+        run: 7z x "fe_extracted/`$PLUGINSDIR/app-64.7z" -ofe_app
+        shell: pwsh
+        
+      - name: Upload Fiddler Everywhere Extracted folder as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe_app
+          path: fe_app/
+          if-no-files-found: error
+
+  patch_fe:
+    runs-on: windows-latest
+
+    needs:
+      - download-Yui-patch
+      - download-msojocs-server
+      - scrape_fe_version
+      - download-fiddler-everywhere-windows
+    if: always()
+
+    env:
+      SCRAPED_VERSION: ${{ needs.scrape_fe_version.outputs.scraped_version }}
+
+    outputs:
+      patched-fe-name: ${{ steps.rename-fe.outputs.patched-fe-name }}
+      
+    steps:
+      - name: Download Yukuhana-Patch
+        uses: actions/download-artifact@v4
+        with:
+          name: Yui-patch
+          path: Yui-patch
+
+      - name: Download msojocs-Server
+        uses: actions/download-artifact@v4
+        with:
+          name: msojocs-patch
+          path: msojocs-patch
+
+      - name: Download FE
+        uses: actions/download-artifact@v4
+        with:
+          name: fe_app
+          path: fe_app
+
+      - name: List the contents of the downloaded artifacts
+        run: |
+          Get-ChildItem -Recurse Yui-patch
+          Get-ChildItem -Recurse msojocs-patch
+          Get-ChildItem -Recurse fe_app
+        shell: pwsh
+
+      - name: Rename main FE folder
+        run: Rename-Item -Path "fe_app" -NewName "FE"
+
+      - name: Patch fiddler.dll / libfiddler.dll
+        run: |
+          $original_fiddler = "FE/${{ needs.download-Yui-patch.outputs.Yui-fiddler-name }}"
+          $Yui_fiddler = "Yui-patch/${{ needs.download-Yui-patch.outputs.Yui-fiddler-name }}"
+          
+          if ((Test-Path $original_fiddler) -and (Test-Path $Yui_fiddler)) {
+            Copy-Item -Path $Yui_fiddler -Destination $original_fiddler -Force
+            Write-Host "Replaced $original_fiddler with $Yui_fiddler"
+          } else {
+            Write-Host "fiddler / libfiddler or Yui patch not found"
+          }
+        shell: pwsh
+
+      - name: Clean Yui-patch
+        run: |
+          if (Test-Path Yui-patch) {
+            Remove-Item -Path "Yui-patch" -Recurse
+          } else {
+            Write-Host "Yui-patch Folder not found"
+          }
+
+      - name: Copy Server Folder
+        run: |
+          $source_server_folder = "msojocs-patch/server/file"
+          $destination_server_folder = "FE/resources/app/out"
+          
+          if (Test-Path $source_server_folder) {
+            Copy-Item -Path $source_server_folder -Destination $destination_server_folder -Recurse
+          } else {
+            Write-Host "Source Server Folder not found"
+          }
+        shell: pwsh
+
+      - name: Patch main.js to main.original.js
+        run: |
+          $source_main = "FE/resources/app/out/main.js"
+          $main_content = Get-Content -Path $source_main -Raw
+
+          $new_main = "FE/resources/app/out/main.original.js"
+
+          $source_index = "msojocs-patch/server/index.js"
+          $index_content = Get-Content -Path $source_index -Raw
+          
+          if ((Test-Path $source_main) -and (Test-Path $source_index)) {
+            Copy-Item -Path $source_main -Destination $new_main
+
+            $appended_content = $index_content + $main_content
+
+            Set-Content -Path $source_main -Value $appended_content
+          } else {
+            Write-Host "Source main.js or index.js (from server) not found"
+          }
+
+      - name: Clean msojocs-patch
+        run: |
+          if (Test-Path msojocs-patch) {
+            Remove-Item -Path "msojocs-patch" -Recurse
+          } else {
+            Write-Host "msojocs-patch Folder not found"
+          }
+
+      - name: Rename FE 
+        id: rename-fe
+        run: |
+          if (Test-Path FE) {
+            $newName = "Fiddler-Everywhere-V$env:SCRAPED_VERSION-Patched"
+            
+            Rename-Item -Path "FE" -NewName $newName
+            
+            echo "patched-fe-name=$newName" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "FE Folder not found!?"
+          }
+
+      - name: Upload Artifact for Patched FE
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ steps.rename-fe.outputs.patched-fe-name }}"
+          path: "${{ steps.rename-fe.outputs.patched-fe-name }}/"
+          if-no-files-found: error
