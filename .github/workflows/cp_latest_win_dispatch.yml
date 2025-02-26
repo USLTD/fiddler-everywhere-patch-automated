@@ -5,57 +5,27 @@ on:
     - cron: '0 0/23 * * *' # every 23 hours
   workflow_dispatch:
 
-env:
-  OS_ARCH: 'Windows (x86_64)'
-
 jobs:
-
-  init_os_arch:
-    runs-on: windows-latest
-    outputs:
-      library_extension:  ${{ steps.set_library_extension.outputs.library_extension }}
-      arch_code:  ${{ steps.set_arch.outputs.arch_code }}
-
-    steps:
-      - name: Set Library Extension (dll / so / dylib)
-        id: set_library_extension
-        shell: pwsh
-        run: |
-          "library_extension=dll" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
-
-      - name: Set Library Extension (dll / so / dylib)
-        id: set_arch
-        shell: pwsh
-        run: |
-          "arch_code=win32-x86_64" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
-
   scrape_fe_version:
     runs-on: windows-latest
-    
     outputs:
       scraped_version: ${{ steps.set_scraped_version.outputs.scraped_version }}
-
     env:
       NODE_JS_VERSION: 23.1.0
-
     steps:
       - uses: actions/checkout@v4
-      
       - name: Use Node.js ${{ env.NODE_JS_VERSION }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_JS_VERSION }}
           cache: 'npm'  # Auto-caches npm dependencies
           cache-dependency-path: utils/fe-version-scraper/package-lock.json
-
       - name: Install Node.js dependencies
         run: npm ci
         working-directory: utils/fe-version-scraper
-
       - name: Run the Node.js script
         run: node .
         working-directory: utils/fe-version-scraper
-
       - name: Read & Set Env
         id: set_scraped_version
         run: |
@@ -66,17 +36,13 @@ jobs:
     runs-on: windows-latest
     needs: 
       - scrape_fe_version
-      - init_os_arch
-
     env: 
       SCRAPED_VERSION: ${{ needs.scrape_fe_version.outputs.scraped_version }}
-      LIBRARY_EXTENSION: ${{ needs.init_os_arch.outputs.library_extension }}
-      ARCH_CODE: ${{ needs.init_os_arch.outputs.arch_code }}
-      
+      LIBRARY_EXTENSION: 'dll'
+      ARCH_CODE: 'win32-x86_64'
     outputs:
       is-compatible-cont: ${{ steps.is-compatible-cont.outputs.is-compatible-cont }}
       Yui-fiddler-name: ${{ steps.Yui-fiddler-name.outputs.Yui-fiddler-name }}
-
     steps:
       - name: Compare SCRAPED_VERSION with 5.17.0
         id: scraped_version_check
@@ -95,41 +61,33 @@ jobs:
           }
         
         shell: pwsh
-
       - name: Set IS_COMPATIBLE_CONT as Output
         id: is-compatible-cont
         run: echo "is-compatible-cont=${{ env.IS_COMPATIBLE_CONT }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
-
       - name: Set Yui name 
         run: echo "YUI_NAME=yui" | Out-File -Append -FilePath $env:GITHUB_ENV
-        
       - name: Set Yui fiddler name (>= 5.17.0)
         if: env.IS_COMPATIBLE_CONT == 'true'
         run: |
           echo "Yui_FIDDLER_NAME=fiddler.$env:LIBRARY_EXTENSION" | Out-File -Append -FilePath $env:GITHUB_ENV
           echo "Yui_FIDDLER_NAME_NO_EXTENSION=fiddler" | Out-File -Append -FilePath $env:GITHUB_ENV
-
       - name: Set Yui fiddler name (< 5.17.0 or on linux)
-        if: env.IS_COMPATIBLE_CONT == 'false' || env.OS_ARCH == 'Linux (x86_64)'
+        if: env.IS_COMPATIBLE_CONT == 'false''
         run: |
           echo "Yui_FIDDLER_NAME=libfiddler.$env:LIBRARY_EXTENSION" | Out-File -Append -FilePath $env:GITHUB_ENV
           echo "Yui_FIDDLER_NAME_NO_EXTENSION=libfiddler" | Out-File -Append -FilePath $env:GITHUB_ENV
-
       - name: Set Yui_FIDDLER_NAME as Output
         id: Yui-fiddler-name
         run: echo "Yui-fiddler-name=${{ env.Yui_FIDDLER_NAME }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
-
       - name: Create Yui directory
         run: |
           if (-Not (Test-Path "Yui")) {
             New-Item -ItemType Directory -Path "Yui"
           }
         shell: pwsh
-
       - name: Set Yui Release
         if: env.IS_COMPATIBLE_CONT == 'true' 
         run: echo "Yui_RELEASE=continuous" | Out-File -Append -FilePath $env:GITHUB_ENV
-        
       - name: Download Yui Patch
         run: |
           Write-Host "EXTENSION = $env:LIBRARY_EXTENSION"
@@ -150,24 +108,20 @@ jobs:
             exit 1
           }
         shell: pwsh
-      
       - name: Upload Yui folder as an artifact
         uses: actions/upload-artifact@v4
         with:
           name: Yui-patch
           path: Yui/
           if-no-files-found: error
-
   download-msojocs-server:
     runs-on: windows-latest
-
     steps:
       - name: Set up Git
         run: |
           git init
           git remote add origin https://github.com/msojocs/fiddler-everywhere-enhance.git
           git config core.sparseCheckout true
-
       - name: Configure sparse-checkout to download the server directory
         run: |
           echo "server" | Out-File -Append -FilePath .git\info\sparse-checkout
